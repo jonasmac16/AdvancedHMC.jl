@@ -16,17 +16,27 @@ end
 
 function lf_momentum(ϵ::T,
         h::Hamiltonian, θ::AbstractVector{T},
-        r::AbstractVector{T}
-    ) where {T<:Real}
+        r::AbstractVector{T}; termination::Tt = Termination()
+    ) where {T<:Real, Tt}
     _∂H∂θ = ∂H∂θ(h, θ)
-    !is_valid(_∂H∂θ) && return r, false
-    return r - ϵ * _∂H∂θ, true
+    termination = combine(Termination(_∂H∂θ), termination)
+    if !is_terminated(termination)
+        r = r - ϵ * _∂H∂θ
+    end
+    return r, termination
 end
 
-function lf_position(ϵ::T, h::Hamiltonian,
-        θ::AbstractVector{T}, r::AbstractVector{T}
-    ) where {T<:Real}
-    return θ + ϵ * ∂H∂r(h, r)
+function lf_position(ϵ::T,
+        h::Hamiltonian, θ::AbstractVector{T},
+        r::AbstractVector{T}; termination::Tt = Termination()
+        ) where {T<:Real, Tt}
+    _∂H∂r = ∂H∂r(h, r)
+    termination = combine(Termination(_∂H∂r), termination)
+    # Only update θ if previous udpates to r has no numerical issue.
+    if !is_terminated(termination)
+        θ = θ + ϵ * _∂H∂r
+    end
+    return θ, termination
 end
 
 # TODO: double check the function below to see if it is type stable or not
@@ -35,26 +45,44 @@ function step(lf::Leapfrog{F},
         r::AbstractVector{T}, n_steps::Int=1
     ) where {F<:AbstractFloat,T<:Real}
     fwd = n_steps > 0 # simulate hamiltonian backward when n_steps < 0
+    _n_steps = abs(n_steps)
     ϵ = fwd ? lf.ϵ : - lf.ϵ
-    n_valid = 0
 
-    r_new, _is_valid_1 = lf_momentum(ϵ/2, h, θ, r)
-    for i = 1:abs(n_steps)
-        θ_new = lf_position(ϵ, h, θ, r_new)
-        r_new, _is_valid_2 = lf_momentum(i == n_steps ? ϵ / 2 : ϵ, h, θ_new, r_new)
-        if (_is_valid_1 && _is_valid_2)
+    r_new, t = lf_momentum(ϵ/2, h, θ, r)
+    for i = 1:_n_steps
+        θ_new, t = lf_position(ϵ, h, θ, r_new; termination=t)
+        r_new, t = lf_momentum(i == n_steps ? ϵ / 2 : ϵ, h,
+                                                θ_new, r_new; termination=t)
+        if !is_terminated(t)
+            # Here r has half more step leapfrog when 1 < i < _n_steps.
             θ, r = θ_new, r_new
-            n_valid = n_valid + 1
         else
+            # Reverse half leapfrog step from r when breaking
+            #  the loop immaturely.
+            if i > 1 && i < _n_steps
+                r, _ = lf_momentum(-lf.ϵ / 2, h, θ, r)
+            end
             break
         end
     end
-    return θ, r, n_valid > 0
+
+    return θ, r, !t
 end
 
 ###
 ### Utility function.
 ###
+
+# Termporary function before formally introducing a `Termination` type.
+Termination(v::AbstractVector{<:Real}=[0.], t::Tt=true) where Tt = !is_valid(v)
+Termination(t::Tt=true) where Tt = t
+is_terminated(t::Tt) where Tt = t
+combine(t1::Tt, t2::Tt) where Tt = t1 && t2
+
+function ValueTermination(f::Function, args...)
+    res = f(args...);
+    res, Termination(!is_valid(res))
+end
 
 function is_valid(v::AbstractVector{<:Real})
     if any(isnan, v) || any(isinf, v)
