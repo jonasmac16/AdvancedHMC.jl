@@ -37,19 +37,34 @@ function step(lf::Leapfrog{F},
     fwd = n_steps > 0 # simulate hamiltonian backward when n_steps < 0
     ϵ = fwd ? lf.ϵ : - lf.ϵ
     n_valid = 0
+    α = 1
+    α_sqrt = sqrt(α)
 
-    r_new, _is_valid_1 = lf_momentum(ϵ/2, h, θ, r)
+    r_new, _is_valid_1 = lf_momentum(ϵ/2, h, θ, r*α_sqrt)
+    r = r_new
     for i = 1:abs(n_steps)
-        θ_new = lf_position(ϵ, h, θ, r_new)
+        θ_new = lf_position(ϵ, h, θ, r)
         r_new, _is_valid_2 = lf_momentum(i == n_steps ? ϵ / 2 : ϵ, h, θ_new, r_new)
         if (_is_valid_1 && _is_valid_2)
-            θ, r = θ_new, r_new
+            if 2*(i-1) < n_steps
+                θ, r = θ_new, r_new*α
+            elseif i*2 > n_steps  && i != n_steps
+                θ, r = θ_new, r_new/α
+            else
+                θ, r = θ_new, r_new/α_sqrt
+            end
+
             n_valid = n_valid + 1
         else
             # Reverse half leapfrog step for r when breaking
             #  the loop immaturely.
             if i > 1 && i < _n_steps
-                r, _ = lf_momentum(-lf.ϵ / 2, h, θ, r)
+                r, _ = lf_momentum(-lf.ϵ / 2, h, θ_new, r_new)
+            end
+            if 2*(i-1) < n_steps
+                r = r*α_sqrt
+            else
+                r = r/α_sqrt
             end
             break
         end
